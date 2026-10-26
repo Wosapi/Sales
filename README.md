@@ -1,17 +1,59 @@
-# Total Sales Dashboard (Excel + Streamlit)
+# نظام تقارير المبيعات (Excel + Python + Streamlit)
 
-## Files
-- `Total_Sales_Template.xlsx`: Excel template with the requested sheets.
-- `streamlit_app.py`: Streamlit app for uploading and viewing an Excel workbook.
-- `requirements.txt`: dependencies for Streamlit Community Cloud.
+ورقة **Data** هي المصدر الأساسي. تقرير **قصادير** يُبنى منها ديناميكيًا: يجمع قيم كل عميل حسب فئة المبلغ
+(`5 SR`، `2 SR`، `10 SR`…) ويكتشف أي فئة جديدة تُضاف إلى Data دون تعديل الكود.
 
-## Deploy on GitHub + Streamlit Community Cloud
-1. Create a new repository on GitHub.
-2. Upload `streamlit_app.py`, `requirements.txt`, and `Total_Sales_Template.xlsx`.
-3. Open https://share.streamlit.io and sign in with GitHub.
-4. Choose **Create app**, select the repository and branch, and set the app file path to `streamlit_app.py`.
-5. Click **Deploy**.
-6. Open the app URL and upload your completed Excel workbook.
+## الملفات
+| الملف | الوظيفة |
+|---|---|
+| `streamlit_app.py` | الواجهة العربية (رفع، معاينة، بحث، مؤشرات، تنزيل) |
+| `sales_core.py` | المنطق: القراءة، اكتشاف الفئات، التجميع، كشف الحساب، كتابة Excel |
+| `test_sales_core.py` | اختبارات القبول |
+| `Total_Sales_Template.xlsx` | ملف نموذجي (نسخة من ملفك الأصلي بأسماء الأوراق السبع الصحيحة) |
+| `requirements.txt` | streamlit وpandas وopenpyxl |
 
-## Important
-The Excel workbook is a starter template, not a completed financial workbook. The exact meaning of the sheet name `قصادير` was not clear, so the requested name has been preserved and its columns are placeholders. Confirm the intended columns and units before using the workbook for business decisions.
+## التشغيل محليًا
+```bash
+python -m venv .venv
+source .venv/bin/activate          # ويندوز: .venv\Scripts\activate
+pip install -r requirements.txt
+streamlit run streamlit_app.py
+```
+ثم ارفع `Total_Sales_Template.xlsx` (أو ملفك) من الشريط الجانبي.
+
+## النشر على GitHub وStreamlit Community Cloud
+1. أنشئ مستودعًا على GitHub (**خاصًا** إن كان الملف النموذجي يحتوي أسماء وأرقام جوالات عملاء) وارفع محتويات هذا المجلد.
+2. ادخل إلى <https://share.streamlit.io> وسجّل بحساب GitHub.
+3. اختر **Create app** ← المستودع والفرع، وفي **Main file path** اكتب `streamlit_app.py` ثم **Deploy**.
+4. الملفات التي يرفعها المستخدمون تُعالج في الذاكرة ولا تُحفظ في المستودع.
+
+## طريقة الاستخدام
+1. **رفع الملف:** من الشريط الجانبي (صيغة xlsx).
+2. **المعاينة:** سبع تبويبات بأسماء الأوراق، وفوقها مؤشرات الإجماليات والمستهدف مقابل الفعلي.
+3. **البحث والتصفية:** بحث عن عميل في «قصادير»؛ وفي «Statement» تصفية بالعميل والاسم والفترة.
+4. **تحديث التقارير:** عدّل الملف في Excel ثم أعد رفعه (أو اضغط «تحديث التقارير»)؛ النتائج تُعاد من Data في كل مرة.
+5. **التنزيل:** زر «تنزيل Total_Sales_Output.xlsx» يعطيك الأوراق السبع.
+
+## قواعد التجميع في «قصادير»
+- العميل = عمود «اسم العميل» (قابل للتغيير من الإعدادات المتقدمة).
+- الفئة = أي عنوان بنمط `<رقم> SR` أو `<رقم> ريال`، بغض النظر عن المسافات وحالة الأحرف والأرقام العربية.
+  الأعمدة المتكررة بنفس الفئة تُجمع في عمود واحد. النمط قابل للتعديل (Regex).
+- الخلايا الفارغة تبقى فارغة (لا تتحول إلى صفر)، والخلايا النصية غير الرقمية تُتجاهل مع رسالة تنبيه.
+- كتلة العملاء تنتهي عند أول صف فيه أرقام بلا اسم عميل (صف إجماليات). يمكن تحديد آخر صف يدويًا.
+- لا تظهر أعمدة التاريخ. عمود «اجمالي المبلغ (القيمة × العدد)» اختياري ومغلق افتراضيًا لأنه قاعدة حساب لم تُحدَّد في المواصفات.
+
+## الاختبارات
+```bash
+python test_sales_core.py        # أو: pip install pytest && pytest -q
+```
+تغطي: عملاء مكررين، خلايا فارغة وغير رقمية، فئة جديدة (`15 SR`)، اختلاف الكتابة (`ريال`، مسافات، حالة الأحرف)،
+صف إجماليات، تحديث النتائج بعد تعديل المصدر، أسماء الأوراق السبع، بقاء بيانات Data كما هي في الملف الناتج، وملف القالب الحقيقي.
+
+## ملاحظات وحدود
+- **xlsb غير مدعوم في الواجهة:** احفظ الملف بصيغة xlsx أولًا.
+- **حفظ الملف الناتج:** المعادلات الأصلية محفوظة وتُحسب عند فتحه في Excel. إن أعدت رفع ملف ناتج دون فتحه وحفظه في Excel
+  ستظهر الواجهة تنبيهًا لأن قيم المعادلات تكون غير محفوظة.
+- **ورقة «قصادير» الأصلية** (برنامج التجميع بتوقيعاته) تُستبدل بالتقرير الديناميكي؛ بقية الأوراق تبقى كما هي.
+- **ورقة Statement:** معادلاتها الأصلية (FILTER/LAMBDA) لا تنجو من تحويل xlsb إلى xlsx، لذلك تُبنى من Data
+  (الأعمدة كما هي في Data دون ربط منتجات مُفترض).
+- أوراق Total وTarget وSales Report وTotal price تُحفظ كما هي ولا تُعاد صياغة معادلاتها؛ لم تُحدَّد لها قواعد جديدة.
