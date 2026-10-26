@@ -1,0 +1,174 @@
+"""Acceptance tests. Run:  python test_sales_core.py   (or: pytest -q)"""
+import datetime as dt
+import io
+import os
+import sys
+
+from openpyxl import Workbook, load_workbook
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from sales_core import (  # noqa: E402
+    REQUIRED_SHEETS, Settings, ValidationError, build_output_workbook, build_qasadeer,
+    build_statement, canonical_sheet_name, load_source, parse_category, read_table,
+)
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+TEMPLATE = os.path.join(HERE, "Total_Sales_Template.xlsx")
+
+
+def make_workbook(data_rows, header, with_all_sheets=True) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    ws.append(header)
+    for r in data_rows:
+        ws.append(r)
+    if with_all_sheets:
+        for name in ["Total", "Target ", "قصادير", "■ Sales Report\t", "Total price", "Statement"]:
+            wb.create_sheet(name).append(["x"])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def table_of(raw, **kw):
+    src = load_source(raw)
+    headers, rows = read_table(src.wb_values[src.sheet_map["Data"]])
+    return build_qasadeer(headers, rows, Settings(**kw) if kw else None), src
+
+
+HEADER = ["Date", "اسم العميل", "5 SR", "2 SR", "10 SR"]
+
+
+def test_spec_example_duplicates_and_no_date_column():
+    raw = make_workbook(
+        [[dt.datetime(2026, 1, 1), "العميل أ", 50, 20, 10],
+         [dt.datetime(2026, 1, 2), "العميل أ", 15, 5, 30],
+         [dt.datetime(2026, 1, 3), "العميل ب", 10, 8, 0]],
+        HEADER,
+    )
+    res, _ = table_of(raw)
+    t = res.table.set_index("اسم العميل")
+    assert t.loc["العميل أ", "5 SR"] == 65 and t.loc["العميل أ", "2 SR"] == 25 and t.loc["العميل أ", "10 SR"] == 40
+    assert t.loc["العميل ب", "5 SR"] == 10 and t.loc["العميل ب", "10 SR"] == 0
+    assert "Date" not in res.table.columns
+
+
+def test_new_column_detected_automatically():
+    raw = make_workbook([["2026-01-01", "أ", 1, 2, 3, 7]], HEADER + ["15 SR"])
+    res, _ = table_of(raw)
+    assert "15 SR" in res.table.columns and res.table["15 SR"].iloc[0] == 7
+    assert list(res.table.columns).count("15 SR") == 1
+
+
+def test_tolerant_names_arabic_variant_and_repeated_columns_merge():
+    header = ["اسم العميل", " 5 sr ", "2 ريال", "5 SR", "٢ ريال", "Notes", "5 dollars"]
+    raw = make_workbook([["أ", 1, 2, 3, 4, "x", 99]], header)
+    res, _ = table_of(raw)
+    assert res.categories == ["5 SR", "2 SR"]
+    row = res.table.iloc[0]
+    assert row["5 SR"] == 4 and row["2 SR"] == 6
+    assert "Notes" not in res.table.columns and "5 dollars" not in res.table.columns
+
+
+def test_empty_cells_stay_blank_and_non_numeric_ignored_with_message():
+    raw = make_workbook([["أ", None, "abc"], ["ب", 5, 3]], ["اسم العميل", "5 SR", "2 SR"])
+    res, _ = table_of(raw)
+    t = res.table.set_index("اسم العميل")
+    assert t.loc["أ"].isna().all()  # missing is not turned into 0
+    assert any("غير رقمية" in m for m in res.issues)
+
+
+def test_totals_row_without_name_is_excluded():
+    raw = make_workbook([["أ", 5, 1], ["ب", 6, 2], [None, 11, 3]], ["اسم العميل", "5 SR", "2 SR"])
+    res, _ = table_of(raw)
+    assert res.table["5 SR"].sum() == 11
+    assert any("تجاهل" in m for m in res.issues)
+
+
+def test_missing_name_column_and_no_categories_give_clear_errors():
+    for header, rows in ((["x", "5 SR"], [["a", 1]]), (["اسم العميل", "qty"], [["a", 1]])):
+        raw = make_workbook(rows, header)
+        try:
+            table_of(raw)
+        except ValidationError as exc:
+            assert str(exc)
+        else:
+            raise AssertionError("expected ValidationError")
+
+
+def test_update_reflects_changed_source():
+    rows = [["أ", 1, 1], ["ب", 2, 2]]
+    before, _ = table_of(make_workbook(rows, ["اسم العميل", "5 SR", "2 SR"]))
+    rows[0][1] = 100
+    rows.append(["ج", 3, 3])
+    after, _ = table_of(make_workbook(rows, ["اسم العميل", "5 SR", "2 SR"]))
+    assert before.table["5 SR"].sum() == 3 and after.table["5 SR"].sum() == 105 and len(after.table) == 3
+
+
+def test_sheet_name_canonicalisation():
+    assert canonical_sheet_name("Target ") == "Target"
+    assert canonical_sheet_name("■ Sales Report\t") == "Sales Report"
+    assert canonical_sheet_name("Other") is None
+
+
+def test_output_has_seven_sheets_and_keeps_data():
+    raw = make_workbook([["أ", 1, 2], ["ب", 3, 4]], ["اسم العميل", "5 SR", "2 SR"])
+    res, src = table_of(raw)
+    out, _ = build_output_workbook(src, res)
+    wb_out = load_workbook(io.BytesIO(out))
+    assert wb_out.sheetnames == REQUIRED_SHEETS
+    a = [list(r) for r in load_workbook(io.BytesIO(raw))["Data"].iter_rows(values_only=True)]
+    b = [list(r) for r in wb_out["Data"].iter_rows(values_only=True)]
+    assert a == b
+    q = {r[0]: r[1:] for r in wb_out["قصادير"].iter_rows(min_row=2, values_only=True) if r[0] != "الإجمالي"}
+    assert q["أ"] == (1, 2)
+
+
+def test_statement_filters():
+    header = ["Date", "Invoice No", "Customer - name", "Amount"]
+    raw = make_workbook(
+        [[dt.datetime(2026, 1, 5), 1, "أ", 10], [dt.datetime(2026, 2, 5), 2, "أ", 20], [dt.datetime(2026, 2, 6), 3, "ب", 5]],
+        header,
+    )
+    src = load_source(raw)
+    headers, rows = read_table(src.wb_values["Data"])
+    assert len(build_statement(headers, rows, customer="أ")) == 2
+    assert len(build_statement(headers, rows, date_from=dt.date(2026, 2, 1))) == 2
+    assert len(build_statement(headers, rows, search="ب")) == 1
+
+
+def test_parse_category_basics():
+    assert parse_category("10 SR")[1] == "10 SR"
+    assert parse_category("1.5 sr")[1] == "1.5 SR"
+    assert parse_category("SR 5") is None and parse_category(None) is None
+
+
+def test_real_template_end_to_end():
+    if not os.path.exists(TEMPLATE):
+        return
+    raw = open(TEMPLATE, "rb").read()
+    res, src = table_of(raw)
+    wb = load_workbook(io.BytesIO(raw), data_only=True)
+    ws = wb["Data"]
+    headers = [c.value for c in ws[1]]
+    cols = {lab: [i for i, h in enumerate(headers) if parse_category(h) and parse_category(h)[1] == lab] for lab in res.categories}
+    for lab, idxs in cols.items():  # independent recount straight from the sheet (customer rows 2..290)
+        expected = sum(ws.cell(r, i + 1).value for r in range(2, 291) for i in idxs
+                       if isinstance(ws.cell(r, i + 1).value, (int, float)))
+        assert res.table[lab].sum() == expected, lab
+    out, _ = build_output_workbook(src, res)
+    assert load_workbook(io.BytesIO(out)).sheetnames == REQUIRED_SHEETS
+
+
+if __name__ == "__main__":
+    failed = 0
+    for name, fn in sorted(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            try:
+                fn()
+                print("PASS", name)
+            except Exception as exc:  # noqa: BLE001
+                failed += 1
+                print("FAIL", name, "->", repr(exc))
+    sys.exit(1 if failed else 0)
